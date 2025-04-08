@@ -18,7 +18,10 @@ import {
   MoreHorizontal,
   Plus,
   RefreshCcwDot,
-  Search
+  Search,
+  Wifi,
+  WifiOff,
+  Server
 } from 'lucide-react'
 
 // UI Components
@@ -53,6 +56,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog'
+import { Badge } from '@/components/ui/badge'
+import { useInView } from 'react-intersection-observer'
 
 // Worker-specific components
 import AddWorkerForm from '@/components/workers/add-form'
@@ -90,13 +95,38 @@ export function WorkersDataTable() {
     updateWorker,
     deleteWorker,
     deleteWorkers,
-    setFilters: setStoreFilters
+    setFilters: setStoreFilters,
+    loadMoreWorkers,
+    networkStatus,
+    checkNetworkStatus
   } = useWorkersStore()
+
+  // Set up intersection observer for infinite scrolling
+  const { ref: loadMoreRef, inView } = useInView({
+    threshold: 0.5,
+    triggerOnce: false
+  })
 
   // Fetch workers on mount and when dependencies change
   React.useEffect(() => {
     fetchWorkers(filters, pagination.page, pagination.pageSize)
   }, [fetchWorkers, filters, pagination.page, pagination.pageSize])
+
+  // Load more workers when scrolling to the bottom
+  React.useEffect(() => {
+    if (inView && pagination.hasMore && loadingState !== 'loading') {
+      loadMoreWorkers()
+    }
+  }, [inView, pagination.hasMore, loadingState, loadMoreWorkers])
+
+  // Check network status periodically
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      checkNetworkStatus()
+    }, 30000) // Check every 30 seconds
+
+    return () => clearInterval(interval)
+  }, [checkNetworkStatus])
 
   // Define table columns
   const columns = React.useMemo<ColumnDef<Worker>[]>(
@@ -365,10 +395,39 @@ export function WorkersDataTable() {
     { id: 'position', label: 'Position', type: 'text' }
   ]
 
+  // Network status badge
+  const NetworkStatusBadge = () => {
+    if (networkStatus === 'offline') {
+      return (
+        <Badge variant='destructive' className='ml-3 flex items-center gap-1'>
+          <WifiOff className='h-3 w-3' />
+          <span>Offline</span>
+        </Badge>
+      )
+    } else if (networkStatus === 'server-down') {
+      return (
+        <Badge variant='destructive' className='ml-3 flex items-center gap-1'>
+          <Server className='h-3 w-3' />
+          <span>Server Down</span>
+        </Badge>
+      )
+    } else {
+      return (
+        <Badge variant='outline' className='ml-3 flex items-center gap-1'>
+          <Wifi className='h-3 w-3' />
+          <span>Online</span>
+        </Badge>
+      )
+    }
+  }
+
   return (
     <>
       {/* Toolbar */}
       <div className='flex items-center py-4'>
+        {/* Network status */}
+        <NetworkStatusBadge />
+
         {/* Search */}
         <div className='flex max-w-sm items-center'>
           <Input
@@ -465,7 +524,7 @@ export function WorkersDataTable() {
         {/* Delete selected button */}
         {table.getFilteredSelectedRowModel().rows.length > 0 && (
           <Button
-            className='ml-3 bg-red-600 hover:bg-red-700'
+            className='text-foreground ml-3 bg-red-600 hover:bg-red-700'
             onClick={() => setDeleteMultipleConfirmOpen(true)}
           >
             Delete Selected ({table.getFilteredSelectedRowModel().rows.length})
@@ -539,32 +598,24 @@ export function WorkersDataTable() {
         </Table>
       </div>
 
-      {/* Pagination */}
+      {/* Load more trigger for infinite scrolling */}
+      {pagination.hasMore && (
+        <div ref={loadMoreRef} className='py-4 text-center'>
+          {loadingState === 'loading' ? (
+            <div className='text-muted-foreground'>Loading more workers...</div>
+          ) : (
+            <div className='text-muted-foreground'>Scroll to load more</div>
+          )}
+        </div>
+      )}
+
+      {/* Pagination info */}
       <div className='flex items-center justify-end space-x-2 py-4'>
         <div className='text-muted-foreground flex-1 text-sm'>
           {table.getFilteredSelectedRowModel().rows.length} of {pagination.total} row(s) selected.
         </div>
         <div className='flex items-center space-x-2'>
-          <Button
-            variant='outline'
-            size='sm'
-            onClick={() => refreshTable(pagination.page - 1)}
-            disabled={pagination.page <= 1}
-          >
-            Previous
-          </Button>
           <span className='text-muted-foreground text-sm'>
-            Page {pagination.page} of {Math.ceil(pagination.total / pagination.pageSize)}
-          </span>
-          <Button
-            variant='outline'
-            size='sm'
-            onClick={() => refreshTable(pagination.page + 1)}
-            disabled={pagination.page * pagination.pageSize >= pagination.total}
-          >
-            Next
-          </Button>
-          <span className='text-muted-foreground ml-2 text-sm'>
             Showing {workers.length} of {pagination.total} workers
           </span>
         </div>

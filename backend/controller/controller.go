@@ -211,3 +211,11 @@ func (c *Controller) DeleteWorker(ctx echo.Context) error {
 	
 	return ctx.JSON(http.StatusOK, map[string]string{"message": "Worker deleted successfully"})
 }
+
+// Health check endpoint
+// GET /health
+func (c *Controller) HealthCheck(ctx echo.Context) error {
+	return ctx.JSON(http.StatusOK, map[string]string{
+		"status": "ok",
+	})
+}

@@ -26,6 +26,7 @@ func main() {
 	ctrl := controller.NewController(repo)
 
 	// API routes
+	e.GET("/api/health", ctrl.HealthCheck)
 	e.GET("/api/workers", ctrl.GetAllWorkers)
 	e.GET("/api/workers/:id", ctrl.GetWorker)
 	e.POST("/api/workers", ctrl.CreateWorker)
