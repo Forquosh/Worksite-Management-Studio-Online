@@ -172,20 +172,29 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
       // Store in local storage for offline use
       LocalStorageService.setWorkers(result.data)
 
+      // For infinite scrolling, we need to append new data instead of replacing it
+      // when loading more (page > 1)
+      const isAppending = page && page > 1
+
+      // Merge with any pending operations from local storage
+      const mergedData = LocalStorageService.mergeWorkers(result.data)
+
+      const updatedWorkers = isAppending ? [...currentState.workers, ...mergedData] : mergedData
+
       set({
-        workers: result.data,
+        workers: updatedWorkers,
         loadingState: 'success',
         filters: filters || {},
         pagination: {
           page: paginationParams.page,
           pageSize: paginationParams.pageSize,
           total: result.total,
-          hasMore: result.data.length * paginationParams.page < result.total
+          hasMore: updatedWorkers.length < result.total
         },
         lastFetchTime: currentTime
       })
 
-      return result.data
+      return updatedWorkers
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
       console.error('Error fetching workers:', error)

@@ -1,24 +1,26 @@
 import { create } from 'zustand'
 
+export type NetworkStatus = 'online' | 'offline' | 'server-down'
+
 interface NetworkState {
-  isOnline: boolean
+  status: NetworkStatus
   setIsOnline: (status: boolean) => void
   checkNetworkStatus: () => Promise<void>
 }
 
 export const useNetworkStatus = create<NetworkState>(set => ({
-  isOnline: navigator.onLine,
-  setIsOnline: status => set({ isOnline: status }),
+  status: navigator.onLine ? 'online' : 'offline',
+  setIsOnline: status => set({ status: status ? 'online' : 'offline' }),
   checkNetworkStatus: async () => {
     try {
       const response = await fetch('/api/health')
       if (response.ok) {
-        set({ isOnline: true })
+        set({ status: 'online' })
       } else {
-        set({ isOnline: false })
+        set({ status: 'server-down' })
       }
     } catch {
-      set({ isOnline: false })
+      set({ status: 'server-down' })
     }
   }
 }))

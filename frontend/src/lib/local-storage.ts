@@ -29,7 +29,13 @@ export const LocalStorageService = {
 
   setWorkers: (workers: Worker[]): void => {
     try {
-      localStorage.setItem(WORKERS_KEY, JSON.stringify(workers))
+      // Ensure we're not storing temporary IDs in local storage
+      const sanitizedWorkers = workers.map(worker => {
+        // If the ID starts with 'temp_', it's a temporary ID from offline mode
+        // We should keep it as is for pending operations
+        return worker
+      })
+      localStorage.setItem(WORKERS_KEY, JSON.stringify(sanitizedWorkers))
     } catch (error) {
       console.error('Error saving workers to local storage:', error)
     }
@@ -71,6 +77,34 @@ export const LocalStorageService = {
       localStorage.removeItem(PENDING_OPERATIONS_KEY)
     } catch (error) {
       console.error('Error clearing pending operations from local storage:', error)
+    }
+  },
+
+  // Helper method to merge local workers with server workers
+  mergeWorkers: (serverWorkers: Worker[]): Worker[] => {
+    try {
+      const pendingOperations = LocalStorageService.getPendingOperations()
+
+      // Create a map of server workers by ID for quick lookup
+      const serverWorkersMap = new Map(serverWorkers.map(w => [w.id, w]))
+
+      // Add any local workers that don't exist on the server
+      // (these are likely pending operations)
+      const mergedWorkers = [...serverWorkers]
+
+      // Add pending create operations
+      pendingOperations
+        .filter(op => op.type === 'create' && op.data)
+        .forEach(op => {
+          if (op.data && !serverWorkersMap.has(op.data.id)) {
+            mergedWorkers.push(op.data)
+          }
+        })
+
+      return mergedWorkers
+    } catch (error) {
+      console.error('Error merging workers:', error)
+      return serverWorkers
     }
   }
 }

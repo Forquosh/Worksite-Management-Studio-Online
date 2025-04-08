@@ -577,7 +577,29 @@ export function WorkersDataTable() {
             ))}
           </TableHeader>
           <TableBody>
-            {table.getRowModel().rows?.length ? (
+            {loadingState === 'loading' && workers.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={columns.length} className='h-24 text-center'>
+                  <div className='flex flex-col items-center justify-center'>
+                    <div className='mb-2 h-8 w-8 animate-spin rounded-full border-b-2 border-gray-900'></div>
+                    <div>Loading workers...</div>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ) : loadingState === 'error' ? (
+              <TableRow>
+                <TableCell colSpan={columns.length} className='h-24 text-center'>
+                  <div className='text-red-500'>
+                    Error loading workers.{' '}
+                    {networkStatus === 'offline'
+                      ? 'You are offline.'
+                      : networkStatus === 'server-down'
+                        ? 'Server is down.'
+                        : ''}
+                  </div>
+                </TableCell>
+              </TableRow>
+            ) : table.getRowModel().rows?.length ? (
               table.getRowModel().rows.map(row => (
                 <TableRow key={row.id} className='hover:bg-muted/30'>
                   {row.getVisibleCells().map(cell => (
