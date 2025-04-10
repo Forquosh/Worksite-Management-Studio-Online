@@ -29,7 +29,9 @@ export const LocalStorageService = {
 
   setWorkers: (workers: Worker[]): void => {
     try {
-      localStorage.setItem(WORKERS_KEY, JSON.stringify(workers))
+      // Remove any duplicate workers by ID
+      const uniqueWorkers = Array.from(new Map(workers.map(worker => [worker.id, worker])).values())
+      localStorage.setItem(WORKERS_KEY, JSON.stringify(uniqueWorkers))
     } catch (error) {
       console.error('Error saving workers to local storage:', error)
     }
@@ -49,8 +51,16 @@ export const LocalStorageService = {
   addPendingOperation: (operation: PendingOperation): void => {
     try {
       const operations = LocalStorageService.getPendingOperations()
-      operations.push(operation)
-      localStorage.setItem(PENDING_OPERATIONS_KEY, JSON.stringify(operations))
+
+      // Remove any existing operation with the same ID and type
+      const filteredOperations = operations.filter(
+        op => !(op.id === operation.id && op.type === operation.type)
+      )
+
+      // Add the new operation
+      filteredOperations.push(operation)
+
+      localStorage.setItem(PENDING_OPERATIONS_KEY, JSON.stringify(filteredOperations))
     } catch (error) {
       console.error('Error adding pending operation to local storage:', error)
     }
@@ -78,7 +88,6 @@ export const LocalStorageService = {
   mergeWorkers: (serverWorkers: Worker[]): Worker[] => {
     try {
       const pendingOperations = LocalStorageService.getPendingOperations()
-      // const localWorkers = LocalStorageService.getWorkers()
 
       // Create a map of server workers by ID for quick lookup
       const serverWorkersMap = new Map(serverWorkers.map(w => [w.id, w]))
@@ -112,7 +121,11 @@ export const LocalStorageService = {
         pendingOperations.filter(op => op.type === 'delete').map(op => op.id)
       )
 
-      return processedWorkers.filter(w => !deletedIds.has(w.id))
+      // Return deduplicated workers
+      const finalWorkers = processedWorkers.filter(w => !deletedIds.has(w.id))
+
+      // Remove any duplicates (by ID)
+      return Array.from(new Map(finalWorkers.map(w => [w.id, w])).values())
     } catch (error) {
       console.error('Error merging workers:', error)
       return serverWorkers

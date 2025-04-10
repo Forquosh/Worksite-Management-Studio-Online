@@ -5,7 +5,7 @@ export type NetworkStatus = 'online' | 'offline' | 'server-down'
 interface NetworkState {
   status: NetworkStatus
   lastCheck: number | null
-  checkNetworkStatus: () => Promise<void>
+  checkNetworkStatus: () => Promise<NetworkStatus>
 }
 
 export const useNetworkStatus = create<NetworkState>(set => ({
@@ -13,21 +13,36 @@ export const useNetworkStatus = create<NetworkState>(set => ({
   lastCheck: null,
 
   checkNetworkStatus: async () => {
-    // If we're offline, no need to check server status
+    // First check if browser reports we're offline
     if (!navigator.onLine) {
-      set({ status: 'offline' })
-      return
+      set({ status: 'offline', lastCheck: Date.now() })
+      return 'offline'
     }
 
+    // Then check if server is reachable
     try {
-      const response = await fetch('/api/health')
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
+
+      const response = await fetch('/api/health', {
+        signal: controller.signal,
+        // Prevent caching
+        headers: { 'Cache-Control': 'no-cache, no-store' }
+      })
+
+      clearTimeout(timeoutId)
+
       if (response.ok) {
         set({ status: 'online', lastCheck: Date.now() })
+        return 'online'
       } else {
         set({ status: 'server-down', lastCheck: Date.now() })
+        return 'server-down'
       }
-    } catch {
+    } catch (error) {
+      console.error('Error checking server status:', error)
       set({ status: 'server-down', lastCheck: Date.now() })
+      return 'server-down'
     }
   }
 }))
@@ -39,8 +54,14 @@ if (typeof window !== 'undefined') {
   })
 
   window.addEventListener('offline', () => {
-    useNetworkStatus.getState().checkNetworkStatus()
+    useNetworkStatus.getState().status = 'offline'
+    useNetworkStatus.getState().lastCheck = Date.now()
   })
+
+  // Initial check on load
+  setTimeout(() => {
+    useNetworkStatus.getState().checkNetworkStatus()
+  }, 0)
 
   // Check network status periodically
   setInterval(() => {

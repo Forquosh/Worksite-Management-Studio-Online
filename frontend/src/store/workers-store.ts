@@ -61,12 +61,24 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
   fetchWorkers: async (filters?: WorkerFilters, page?: number, pageSize?: number) => {
     const currentState = get()
     const currentTime = Date.now()
-    const networkStatus = useNetworkStatus.getState().status
 
-    // Check if we should be in offline mode
+    // Check network status
+    const networkStatus = await useNetworkStatus.getState().checkNetworkStatus()
+
+    // Determine if we should be in offline mode
     const shouldBeOffline = networkStatus !== 'online'
     if (shouldBeOffline !== currentState.isOfflineMode) {
       set({ isOfflineMode: shouldBeOffline })
+    }
+
+    // Determine if we're loading the first page or appending
+    const isLoadingFirstPage =
+      page === 1 || (page === undefined && currentState.pagination.page === 1)
+    const isAppending = page !== undefined && page > 1
+
+    // Set loading state
+    if (!isAppending) {
+      set({ loadingState: 'loading', error: null })
     }
 
     // If we're in offline mode, use local storage
@@ -115,8 +127,13 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
       const endIndex = startIndex + paginationParams.pageSize
       const paginatedWorkers = filteredWorkers.slice(startIndex, endIndex)
 
+      // For pagination, append to existing results if not first page
+      const updatedWorkers = isAppending
+        ? [...currentState.workers, ...paginatedWorkers]
+        : paginatedWorkers
+
       set({
-        workers: paginatedWorkers,
+        workers: updatedWorkers,
         loadingState: 'success',
         filters: filters || {},
         pagination: {
@@ -128,45 +145,34 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
         lastFetchTime: currentTime
       })
 
-      return paginatedWorkers
+      return updatedWorkers
     }
 
-    // Check if we have cached data that's still valid
-    if (
-      currentState.lastFetchTime &&
-      currentTime - currentState.lastFetchTime < currentState.cacheTimeout &&
-      currentState.loadingState === 'success' &&
-      JSON.stringify(currentState.filters) === JSON.stringify(filters || {}) &&
-      currentState.pagination.page === (page || currentState.pagination.page) &&
-      currentState.pagination.pageSize === (pageSize || currentState.pagination.pageSize)
-    ) {
-      return currentState.workers
-    }
-
-    set({ loadingState: 'loading', error: null })
-    console.log('Fetching workers with filters:', filters)
-
+    // Online mode - use API
     try {
       const paginationParams = {
         page: page || currentState.pagination.page,
         pageSize: pageSize || currentState.pagination.pageSize
       }
 
-      console.log('Fetching with pagination:', paginationParams)
+      console.log('Fetching with pagination:', paginationParams, 'and filters:', filters)
       const result = await WorkersAPI.getAll(filters, paginationParams)
       console.log('API result:', result)
 
-      // Store in local storage for offline use
-      LocalStorageService.setWorkers(result.data)
+      // Store in local storage for offline use (only full set, not paginated data)
+      if (isLoadingFirstPage) {
+        LocalStorageService.setWorkers(result.data)
+      } else {
+        // Append to existing local storage data
+        const existingData = LocalStorageService.getWorkers()
+        const newIds = new Set(result.data.map(w => w.id))
+        const uniqueExistingData = existingData.filter(w => !newIds.has(w.id))
+        LocalStorageService.setWorkers([...uniqueExistingData, ...result.data])
+      }
 
       // For infinite scrolling, we need to append new data instead of replacing it
       // when loading more (page > 1)
-      const isAppending = page && page > 1
-
-      // Merge with any pending operations from local storage
-      const mergedData = LocalStorageService.mergeWorkers(result.data)
-
-      const updatedWorkers = isAppending ? [...currentState.workers, ...mergedData] : mergedData
+      const updatedWorkers = isAppending ? [...currentState.workers, ...result.data] : result.data
 
       set({
         workers: updatedWorkers,
@@ -185,12 +191,18 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
       console.error('Error fetching workers:', error)
+
+      // Switch to offline mode if we couldn't reach the server
       set({
         loadingState: 'error',
-        error: errorMessage
+        error: errorMessage,
+        isOfflineMode: true
       })
+
       toast.error(`Error fetching workers: ${errorMessage}`)
-      throw error
+
+      // Try to serve data from local storage as fallback
+      return get().fetchWorkers(filters, page, pageSize)
     }
   },
 
@@ -199,11 +211,13 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
 
     // Don't load more if we're already loading or there's no more data
     if (currentState.loadingState === 'loading' || !currentState.pagination.hasMore) {
+      console.log('Skipping loadMore - already loading or no more data')
       return
     }
 
     // Load the next page
     const nextPage = currentState.pagination.page + 1
+    console.log('Loading more workers - page:', nextPage)
     await currentState.fetchWorkers(
       currentState.filters,
       nextPage,
@@ -212,53 +226,76 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
   },
 
   syncPendingOperations: async () => {
-    const currentState = get()
     const pendingOperations = LocalStorageService.getPendingOperations()
 
     if (pendingOperations.length === 0) {
       return
     }
 
+    const networkStatus = await useNetworkStatus.getState().checkNetworkStatus()
+    if (networkStatus !== 'online') {
+      toast.error('Cannot sync while offline')
+      return
+    }
+
+    let successCount = 0
+    let failCount = 0
+
     try {
       // Process each pending operation
       for (const operation of pendingOperations) {
-        switch (operation.type) {
-          case 'create':
-            await WorkersAPI.create(operation.data!)
-            break
-          case 'update':
-            await WorkersAPI.update(operation.data!)
-            break
-          case 'delete':
-            await WorkersAPI.delete(operation.id)
-            break
+        try {
+          switch (operation.type) {
+            case 'create':
+              await WorkersAPI.create(operation.data!)
+              break
+            case 'update':
+              await WorkersAPI.update(operation.data!)
+              break
+            case 'delete':
+              await WorkersAPI.delete(operation.id)
+              break
+          }
+          // Remove the operation after successful sync
+          LocalStorageService.removePendingOperation(operation.id)
+          successCount++
+        } catch (error) {
+          console.error(`Error syncing operation ${operation.id}:`, error)
+          failCount++
         }
-        // Remove the operation after successful sync
-        LocalStorageService.removePendingOperation(operation.id)
       }
 
       // Refresh the data after syncing
-      await currentState.fetchWorkers(
-        currentState.filters,
-        currentState.pagination.page,
-        currentState.pagination.pageSize
+      await get().fetchWorkers(
+        get().filters,
+        1, // Reset to first page after sync
+        get().pagination.pageSize
       )
 
-      toast.success('Successfully synced pending operations')
+      if (successCount > 0 && failCount === 0) {
+        toast.success(`Successfully synced ${successCount} operations`)
+      } else if (successCount > 0 && failCount > 0) {
+        toast.warning(`Synced ${successCount} operations, but ${failCount} failed`)
+      } else if (failCount > 0) {
+        toast.error(`Failed to sync ${failCount} operations`)
+      }
     } catch (error) {
-      console.error('Error syncing pending operations:', error)
-      toast.error('Failed to sync some operations. Will retry later.')
+      console.error('Error in sync process:', error)
+      toast.error('Failed to sync operations. Will retry later.')
     }
   },
 
   addWorker: async (worker: Worker) => {
-    const currentState = get()
     set({ loadingState: 'loading', error: null })
 
     try {
       let newWorker: Worker
 
-      if (currentState.isOfflineMode) {
+      // Check network status before proceeding
+      const networkStatus = await useNetworkStatus.getState().checkNetworkStatus()
+      const isOffline = networkStatus !== 'online'
+
+      if (isOffline) {
         // Generate a temporary ID for offline mode
         const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
         newWorker = { ...worker, id: tempId }
@@ -275,10 +312,11 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
           timestamp: Date.now()
         })
 
-        // Update state
+        // Update state - we need to be careful not to add duplicates
         set(state => ({
           workers: [...state.workers, newWorker],
-          loadingState: 'success'
+          loadingState: 'success',
+          isOfflineMode: true // Ensure we're in offline mode
         }))
 
         toast.success('Worker added (offline mode)')
@@ -292,9 +330,10 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
           loadingState: 'success'
         }))
 
-        // Update local storage
+        // Update local storage - avoid duplicates
         const localWorkers = LocalStorageService.getWorkers()
-        LocalStorageService.setWorkers([...localWorkers, newWorker])
+        const filteredLocalWorkers = localWorkers.filter(w => w.id !== newWorker.id)
+        LocalStorageService.setWorkers([...filteredLocalWorkers, newWorker])
 
         toast.success('Worker added successfully!')
       }
@@ -303,23 +342,35 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
       console.error('Error adding worker:', error)
+
+      // If we hit an error, switch to offline mode and try again
+      const networkStatus = await useNetworkStatus.getState().checkNetworkStatus()
+      if (networkStatus !== 'online') {
+        set({ isOfflineMode: true, loadingState: 'idle' })
+        return get().addWorker(worker)
+      }
+
       set({
         loadingState: 'error',
         error: errorMessage
       })
+
       toast.error(`Failed to add worker: ${errorMessage}`)
       throw error
     }
   },
 
   updateWorker: async (worker: Worker) => {
-    const currentState = get()
     set({ loadingState: 'loading', error: null })
 
     try {
       let updatedWorker: Worker
 
-      if (currentState.isOfflineMode) {
+      // Check network status before proceeding
+      const networkStatus = await useNetworkStatus.getState().checkNetworkStatus()
+      const isOffline = networkStatus !== 'online'
+
+      if (isOffline) {
         // In offline mode, update local storage
         const localWorkers = LocalStorageService.getWorkers()
         const updatedWorkers = localWorkers.map(w => (w.id === worker.id ? worker : w))
@@ -336,7 +387,8 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
         // Update state
         set(state => ({
           workers: state.workers.map(w => (w.id === worker.id ? worker : w)),
-          loadingState: 'success'
+          loadingState: 'success',
+          isOfflineMode: true // Ensure we're in offline mode
         }))
 
         toast.success('Worker updated (offline mode)')
@@ -365,21 +417,33 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
       console.error('Error updating worker:', error)
+
+      // If we hit an error, switch to offline mode and try again
+      const networkStatus = await useNetworkStatus.getState().checkNetworkStatus()
+      if (networkStatus !== 'online') {
+        set({ isOfflineMode: true, loadingState: 'idle' })
+        return get().updateWorker(worker)
+      }
+
       set({
         loadingState: 'error',
         error: errorMessage
       })
+
       toast.error(`Failed to update worker: ${errorMessage}`)
       throw error
     }
   },
 
   deleteWorker: async (id: string) => {
-    const currentState = get()
     set({ loadingState: 'loading', error: null })
 
     try {
-      if (currentState.isOfflineMode) {
+      // Check network status before proceeding
+      const networkStatus = await useNetworkStatus.getState().checkNetworkStatus()
+      const isOffline = networkStatus !== 'online'
+
+      if (isOffline) {
         // In offline mode, update local storage
         const localWorkers = LocalStorageService.getWorkers()
         const updatedWorkers = localWorkers.filter(w => w.id !== id)
@@ -395,7 +459,8 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
         // Update state
         set(state => ({
           workers: state.workers.filter(w => w.id !== id),
-          loadingState: 'success'
+          loadingState: 'success',
+          isOfflineMode: true // Ensure we're in offline mode
         }))
 
         toast.success('Worker deleted (offline mode)')
@@ -419,21 +484,33 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
       console.error('Error deleting worker:', error)
+
+      // If we hit an error, switch to offline mode and try again
+      const networkStatus = await useNetworkStatus.getState().checkNetworkStatus()
+      if (networkStatus !== 'online') {
+        set({ isOfflineMode: true, loadingState: 'idle' })
+        return get().deleteWorker(id)
+      }
+
       set({
         loadingState: 'error',
         error: errorMessage
       })
+
       toast.error(`Failed to delete worker: ${errorMessage}`)
       throw error
     }
   },
 
   deleteWorkers: async (ids: string[]) => {
-    const currentState = get()
     set({ loadingState: 'loading', error: null })
 
     try {
-      if (currentState.isOfflineMode) {
+      // Check network status before proceeding
+      const networkStatus = await useNetworkStatus.getState().checkNetworkStatus()
+      const isOffline = networkStatus !== 'online'
+
+      if (isOffline) {
         // In offline mode, update local storage
         const localWorkers = LocalStorageService.getWorkers()
         const updatedWorkers = localWorkers.filter(w => !ids.includes(w.id))
@@ -451,7 +528,8 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
         // Update state
         set(state => ({
           workers: state.workers.filter(w => !ids.includes(w.id)),
-          loadingState: 'success'
+          loadingState: 'success',
+          isOfflineMode: true // Ensure we're in offline mode
         }))
 
         toast.success(`${ids.length} workers deleted (offline mode)`)
@@ -475,17 +553,20 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
       console.error('Error deleting workers:', error)
+
+      // If we hit an error, switch to offline mode and try again
+      const networkStatus = await useNetworkStatus.getState().checkNetworkStatus()
+      if (networkStatus !== 'online') {
+        set({ isOfflineMode: true, loadingState: 'idle' })
+        return get().deleteWorkers(ids)
+      }
+
       set({
         loadingState: 'error',
         error: errorMessage
       })
+
       toast.error(`Failed to delete some workers: ${errorMessage}`)
-
-      // Refresh to sync with backend
-      if (!currentState.isOfflineMode) {
-        get().fetchWorkers(get().filters, get().pagination.page, get().pagination.pageSize)
-      }
-
       throw error
     }
   }
