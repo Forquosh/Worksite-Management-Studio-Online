@@ -2,8 +2,7 @@ import { create } from 'zustand'
 import { WorkersAPI, Worker, WorkerFilters } from '@/api/workers-api'
 import { toast } from 'sonner'
 import { LocalStorageService } from '@/lib/local-storage'
-import { useNetworkStatus, NetworkStatus } from '@/lib/network-status'
-import { SyncService } from '@/lib/sync-service'
+import { useNetworkStatus } from '@/store/network-status'
 
 // Enhanced loading state type
 type LoadingState = 'idle' | 'loading' | 'success' | 'error'
@@ -23,7 +22,6 @@ interface WorkersState {
   lastFetchTime: number | null
   cacheTimeout: number // milliseconds
   isOfflineMode: boolean
-  networkStatus: NetworkStatus
 
   // Actions
   fetchWorkers: (filters?: WorkerFilters, page?: number, pageSize?: number) => Promise<Worker[]>
@@ -34,7 +32,7 @@ interface WorkersState {
   deleteWorkers: (ids: string[]) => Promise<void>
   resetError: () => void
   loadMoreWorkers: () => Promise<void>
-  checkNetworkStatus: () => Promise<void>
+  syncPendingOperations: () => Promise<void>
 }
 
 export const useWorkersStore = create<WorkersState>((set, get) => ({
@@ -51,7 +49,6 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
   lastFetchTime: null,
   cacheTimeout: 5 * 60 * 1000, // 5 minutes cache
   isOfflineMode: false,
-  networkStatus: 'online',
 
   setFilters: (filters: WorkerFilters) => {
     set({ filters, pagination: { ...get().pagination, page: 1 } })
@@ -61,29 +58,19 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
     set({ error: null })
   },
 
-  checkNetworkStatus: async () => {
-    const status = await useNetworkStatus.getState().checkNetworkStatus()
-    const isOfflineMode = status !== 'online'
-
-    set({ networkStatus: status, isOfflineMode })
-
-    // If we're back online, try to sync pending operations
-    if (status === 'online') {
-      await SyncService.startSync()
-    }
-
-    // Return void instead of the status
-  },
-
   fetchWorkers: async (filters?: WorkerFilters, page?: number, pageSize?: number) => {
     const currentState = get()
     const currentTime = Date.now()
+    const networkStatus = useNetworkStatus.getState().status
 
-    // Check network status first
-    await currentState.checkNetworkStatus()
+    // Check if we should be in offline mode
+    const shouldBeOffline = networkStatus !== 'online'
+    if (shouldBeOffline !== currentState.isOfflineMode) {
+      set({ isOfflineMode: shouldBeOffline })
+    }
 
     // If we're in offline mode, use local storage
-    if (currentState.isOfflineMode) {
+    if (shouldBeOffline) {
       console.log('Using local storage for workers data')
       const localWorkers = LocalStorageService.getWorkers()
 
@@ -222,6 +209,46 @@ export const useWorkersStore = create<WorkersState>((set, get) => ({
       nextPage,
       currentState.pagination.pageSize
     )
+  },
+
+  syncPendingOperations: async () => {
+    const currentState = get()
+    const pendingOperations = LocalStorageService.getPendingOperations()
+
+    if (pendingOperations.length === 0) {
+      return
+    }
+
+    try {
+      // Process each pending operation
+      for (const operation of pendingOperations) {
+        switch (operation.type) {
+          case 'create':
+            await WorkersAPI.create(operation.data!)
+            break
+          case 'update':
+            await WorkersAPI.update(operation.data!)
+            break
+          case 'delete':
+            await WorkersAPI.delete(operation.id)
+            break
+        }
+        // Remove the operation after successful sync
+        LocalStorageService.removePendingOperation(operation.id)
+      }
+
+      // Refresh the data after syncing
+      await currentState.fetchWorkers(
+        currentState.filters,
+        currentState.pagination.page,
+        currentState.pagination.pageSize
+      )
+
+      toast.success('Successfully synced pending operations')
+    } catch (error) {
+      console.error('Error syncing pending operations:', error)
+      toast.error('Failed to sync some operations. Will retry later.')
+    }
   },
 
   addWorker: async (worker: Worker) => {

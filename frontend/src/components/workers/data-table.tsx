@@ -18,10 +18,7 @@ import {
   MoreHorizontal,
   Plus,
   RefreshCcwDot,
-  Search,
-  Wifi,
-  WifiOff,
-  Server
+  Search
 } from 'lucide-react'
 
 // UI Components
@@ -56,12 +53,12 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog'
-import { Badge } from '@/components/ui/badge'
 import { useInView } from 'react-intersection-observer'
 
 // Worker-specific components
 import AddWorkerForm from '@/components/workers/add-form'
 import EditWorkerForm from '@/components/workers/edit-form'
+import { NetworkStatusBadge } from '@/components/network-status-badge'
 
 // API and store
 import { Worker, WorkerFilters } from '@/api/workers-api'
@@ -97,8 +94,7 @@ export function WorkersDataTable() {
     deleteWorkers,
     setFilters: setStoreFilters,
     loadMoreWorkers,
-    networkStatus,
-    checkNetworkStatus
+    isOfflineMode
   } = useWorkersStore()
 
   // Set up intersection observer for infinite scrolling
@@ -118,15 +114,6 @@ export function WorkersDataTable() {
       loadMoreWorkers()
     }
   }, [inView, pagination.hasMore, loadingState, loadMoreWorkers])
-
-  // Check network status periodically
-  React.useEffect(() => {
-    const interval = setInterval(() => {
-      checkNetworkStatus()
-    }, 30000) // Check every 30 seconds
-
-    return () => clearInterval(interval)
-  }, [checkNetworkStatus])
 
   // Define table columns
   const columns = React.useMemo<ColumnDef<Worker>[]>(
@@ -395,32 +382,6 @@ export function WorkersDataTable() {
     { id: 'position', label: 'Position', type: 'text' }
   ]
 
-  // Network status badge
-  const NetworkStatusBadge = () => {
-    if (networkStatus === 'offline') {
-      return (
-        <Badge variant='destructive' className='ml-3 flex items-center gap-1'>
-          <WifiOff className='h-3 w-3' />
-          <span>Offline</span>
-        </Badge>
-      )
-    } else if (networkStatus === 'server-down') {
-      return (
-        <Badge variant='destructive' className='ml-3 flex items-center gap-1'>
-          <Server className='h-3 w-3' />
-          <span>Server Down</span>
-        </Badge>
-      )
-    } else {
-      return (
-        <Badge variant='outline' className='ml-3 flex items-center gap-1'>
-          <Wifi className='h-3 w-3' />
-          <span>Online</span>
-        </Badge>
-      )
-    }
-  }
-
   return (
     <>
       {/* Toolbar */}
@@ -590,12 +551,7 @@ export function WorkersDataTable() {
               <TableRow>
                 <TableCell colSpan={columns.length} className='h-24 text-center'>
                   <div className='text-red-500'>
-                    Error loading workers.{' '}
-                    {networkStatus === 'offline'
-                      ? 'You are offline.'
-                      : networkStatus === 'server-down'
-                        ? 'Server is down.'
-                        : ''}
+                    Error loading workers. {isOfflineMode ? 'You are offline.' : ''}
                   </div>
                 </TableCell>
               </TableRow>
